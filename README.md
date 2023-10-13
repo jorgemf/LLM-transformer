@@ -1,7 +1,41 @@
 # LLM transformer
 
 
-## Setup
+## Configuration
+
+### Dependencies
+
+The dependencies for this project are managed by [Poetry](https://python-poetry.org). To install them, run
+
+```bash
+poetry install
+```
+
+Some of the dependencies are:
+- Pytorch 2.0
+- Python 3.10
+
+### Docker
+
+A Dockerfile is provided to run the code in a container. To build the image, run
+
+```bash
+./build_docker_image.sh
+```
+
+The image name is `$HOSTNAME/llm-transformer`. To run the container, run
+
+```bash
+./docker.sh python -m llmt.main --help
+```
+
+### Hardware
+
+This code was developed and tested on the Nvidia 4090 GPU with 24GB of memory.
+
+## Usage
+
+### Setup
 
 ```sh
 huggingface-cli login
@@ -11,47 +45,37 @@ poetry install
 
 Token is supposed to be under directory `./data`
 
-## Download dataset
+### Dataset
 
+In order to download the dataset, run
+
+```bash
+./docker.sh python -m llmt.main dataset download
 ```
-poetry run python -m llma.main dataset download
-```
 
-## Train
+and it will be downloaded under `-./data`.
 
-```sh
-poetry run python -m llma.main train
+### Training
+
+In order to train a model, run
+
+```bash
+./docker.sh python -m llmt.main train
 ```
 
 We use the tokenizer from https://huggingface.co/replit/replit-code-v1-3b
 
-## Evaluation:
+### Validation and metrics
 
-_work in progress_
+_TODO_
 
 Links:
 - https://github.com/openai/human-eval-infilling
 - https://github.com/nuprl/MultiPL-E
 
-# Docker
+### Inference
 
-You can run the code in the docker containers. 
-
-First you need to create the docker image:
-
-```sh
-./build_docker_image.sh
-```
-
-The name of the docker image is $HOSTNAME/llm-kotlin
-
-Then you can run the docker container:
-
-```sh
-./run_docker.sh python -c llma.main --help
-```
-
-The previous command will display the help message.
+_TODO_
 
 # TODO
 

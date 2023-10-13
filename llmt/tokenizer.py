@@ -23,7 +23,7 @@ Class is modified for compatibility with custom vocabulary and to achieve desire
 behavior for Replit Code V1 3B model.
 """
 import sentencepiece as spm
-from transformers import PreTrainedTokenizer
+from transformers.tokenization_utils import PreTrainedTokenizer
 from typing import Any, Dict, List, Optional
 
 
@@ -63,12 +63,12 @@ class ReplitLMTokenizer(PreTrainedTokenizer):
                  bos_token="<extra_id_0>", eos_token='<extra_id_2>', sep_token='<extra_id_1>',
                  sp_model_kwargs: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         self.sp_model_kwargs = {} if sp_model_kwargs is None else sp_model_kwargs
-        super().__init__(bos_token=bos_token, eos_token=eos_token, unk_token=unk_token,
-                         pad_token=pad_token, sep_token=sep_token,
-                         sp_model_kwargs=self.sp_model_kwargs, **kwargs)
         self.vocab_file = vocab_file
         self.sp_model = spm.SentencePieceProcessor(**self.sp_model_kwargs)
         self.sp_model.Load(vocab_file)
+        super().__init__(bos_token=bos_token, eos_token=eos_token, unk_token=unk_token,
+                         pad_token=pad_token, sep_token=sep_token,
+                         sp_model_kwargs=self.sp_model_kwargs, **kwargs)
 
     @property
     def vocab_size(self):

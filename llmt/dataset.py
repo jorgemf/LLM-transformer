@@ -61,7 +61,7 @@ def process():
 def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_size: int,
                    max_code_generated: Optional[int] = None, finetune: bool = False,
                    train: bool = True, val_samples: Optional[int] = None,
-                   chars_per_token: float = 3.5) \
+                   chars_per_token: float = 3.4) \
         -> Tuple[DataLoader, DataLoader]:
     """
     Returns the dataloader for training and validation. The validation dataaset is the initial part
@@ -79,6 +79,7 @@ def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_s
     """
     assert train or not finetune, "Finetune is only supported for train=True"
     ds = get_small_dataset()
+    # TODO
     # all_ds = [datasets.load_dataset("bigcode/the-stack-dedup",
     #                                 data_dir=f"data/{lang}",
     #                                 split="train",
@@ -91,14 +92,16 @@ def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_s
     # ds = interleave_datasets(all_ds, probabilities=probabilities,
     #                          stopping_strategy="all_exhausted")
     ds = ds.remove_columns([x for x in ds.column_names if x != "content"])
-
     def _basic_tokenizer(example):
-        text = example["content"]
-        if len(text) > sequence_length * chars_per_token:
-            index = torch.randint(high=len(example) - sequence_length * chars_per_token, size=(1,))
-            text = text[index:index + sequence_length * chars_per_token]
-        return tokenizer(text, return_token_type_ids=False, truncation=True,
-                         max_length=sequence_length, return_tensors='np')
+        text_list = example["content"]
+        for idx in range(len(text_list)):
+            text = text_list[idx]
+            sequence_chars = int(sequence_length * chars_per_token)
+            if len(text) > sequence_chars:
+                index = torch.randint(high=len(text) - sequence_chars, size=(1,))
+                text_list[idx] = text[index:index + sequence_chars]
+        return tokenizer(text_list, max_length=sequence_length, truncation=True,
+                         return_token_type_ids=False, return_tensors='np')
 
     if finetune:
         ds.set_transform(CompleteCodeDataset(tokenizer=tokenizer,
@@ -107,6 +110,7 @@ def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_s
                                              chars_per_token=chars_per_token))
     else:
         ds.set_transform(_basic_tokenizer)
+
 
     data_collator = DataCollatorWithPadding(tokenizer, padding="longest",
                                             max_length=sequence_length, return_tensors='pt')
@@ -158,29 +162,30 @@ class CompleteCodeDataset(Dataset):
         :param chars_per_token: the amount of characters per token on average
         """
         self.tokenizer = tokenizer
-        self.seq_length = int(seq_length * chars_per_token)
-        self.max_code_generated = int(max_code_generated * chars_per_token)
+        self.seq_length = seq_length
+        self.seq_length_chars = int(seq_length*chars_per_token)
+        self.max_code_generated_chars = int(max_code_generated*chars_per_token)
         self.input_column_name = input_column_name
         self.white_spaces_re = re.compile(r'[\s\n\t]')
         self.new_line_re = re.compile(r'[\n]')
 
     def __call__(self, data):
-        text = data[self.input_column_name]
-        initial_pos = torch.randint(0, len(text), (1,)).item()
-        match = self.new_line_re.search(text, initial_pos)
-        if match is not None:
-            initial_pos = match.start() + 1
-            prediction_length = torch.randint(0, self.max_code_generated, (1,)).item()
-            final_pos = self.new_line_re.search(text, initial_pos + prediction_length)
-            if final_pos is not None:
-                final_pos = final_pos.start()
-                context_window = self.seq_length - (final_pos + initial_pos) - 2
-                pre_code = text[max(0, initial_pos - context_window):initial_pos]
-                post_code = text[final_pos:final_pos + context_window]
-                target = text[initial_pos:final_pos]
-                text = (pre_code + self.tokenizer.sep_token + post_code + self.tokenizer.bos_token +
-                        target + self.tokenizer.eos_token)
-        return self.tokenizer(text=text, return_token_type_ids=False,
-                              truncation_side="left", max_length=self.seq_length,
-                              truncation=True,
-                              return_special_tokens_mask=False)
+        text_list = data[self.input_column_name]
+        for idx in range(len(text_list)):
+            text = text_list[idx]
+            initial_pos = torch.randint(0, len(text), (1,)).item()
+            match = self.new_line_re.search(text, initial_pos)
+            if match is not None:
+                initial_pos = match.start() + 1
+                prediction_length = torch.randint(0, self.max_code_generated_chars, (1,)).item()
+                final_pos = self.new_line_re.search(text, initial_pos + prediction_length)
+                if final_pos is not None:
+                    final_pos = final_pos.start()
+                    context_window = self.seq_length_chars - (final_pos + initial_pos) - 2
+                    pre_code = text[max(0, initial_pos - context_window):initial_pos]
+                    post_code = text[final_pos:final_pos + context_window]
+                    target = text[initial_pos:final_pos]
+                    text_list[idx] = (pre_code + self.tokenizer.sep_token + post_code +
+                                      self.tokenizer.bos_token + target + self.tokenizer.eos_token)
+        return self.tokenizer(text=text_list, max_length=self.seq_length, truncation=True,
+                              return_token_type_ids=False, return_special_tokens_mask=False)

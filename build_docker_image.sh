@@ -8,7 +8,7 @@ fi
 BASE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 echo $BASE_DIR
 
-DOCKER_IMAGE="$HOSTNAME/llm-kotlin"
+DOCKER_IMAGE="$HOSTNAME/llm-transformer"
 if [[ -f "$BASE_DIR/Dockerfile" ]]; then
   if [[ "$(docker images -q "$DOCKER_IMAGE:latest" 2> /dev/null)" != "" ]]; then
     echo "renaming old image... $DOCKER_IMAGE:latest -> $DOCKER_IMAGE:old"

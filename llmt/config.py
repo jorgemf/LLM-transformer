@@ -48,3 +48,17 @@ def get_device() -> str:
         else "cpu"
     )
     return device
+
+
+def get_mixed_precission(dtype) -> str:
+    """
+    Gets the mixed precision type.
+    :param dtype: the data type
+    :return:
+    """
+    if dtype == torch.float16:
+        return 'bf16'
+    elif dtype == torch.bfloat16:
+        return 'fp16'
+    else:
+        return 'no'
