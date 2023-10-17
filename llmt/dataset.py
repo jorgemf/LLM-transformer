@@ -1,11 +1,15 @@
+import enum
 import os
-from typing import Optional, Tuple
 import re
-import typer
-import torch
+from typing import Optional, Tuple
+
 import datasets
-from torch.utils.data import DataLoader
-from datasets import load_dataset, interleave_datasets, Dataset
+import numpy as np
+import requests
+import torch
+import typer
+from datasets import interleave_datasets, Dataset
+from torch.utils.data import DataLoader, random_split
 from transformers.data.data_collator import DataCollatorWithPadding
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -14,28 +18,88 @@ from .config import TOKEN, LANGUAGES
 app = typer.Typer()
 
 
-def get_small_dataset() -> Dataset:
+class DatasetType(enum.Enum):
     """
-    :return: a small dataset for testing so you don't have to wait to load the full data
+    The type of dataset to use.
     """
-    if os.path.exists("data/llm_val_text.hf"):
-        print("Loading cached val text...")
-        ds = datasets.load_from_disk("data/llm_val_text.hf")
-    else:
-        all_ds = [datasets.load_dataset("bigcode/the-stack-dedup",
-                                        data_dir=f"data/{lang}",
-                                        split="train",
-                                        use_auth_token=TOKEN) for lang in
-                  LANGUAGES]
-        ds = interleave_datasets(all_ds, stopping_strategy="all_exhausted")
-        if filter is not None:
-            ds = ds.select(range(100000))
+    FULL = "full"
+    SMALL = "small"
 
-        data = list(ds)
-        columns = {key: [item[key] for item in data] for key in data[0].keys()}
-        hf_dataset = Dataset.from_dict(columns)
-        hf_dataset.save_to_disk("data/llm_val_text.hf")
-    return ds
+
+class TextDataset(Dataset):
+    """
+    A dataset that returns the text as a sequence of tokens.
+    """
+
+    def __init__(self, tokens: np.ndarray, seq_length: int = 1024):
+        """
+        Initializes the dataset.
+        :param tokens: the data to use
+        :param seq_length: the length of the sequence
+        """
+        self.tokens = tokens
+        self.seq_length = seq_length
+
+    def __len__(self):
+        return len(self.tokens) - self.seq_length
+
+    def __getitem__(self, idx):
+        inputs_ids = [np.copy(self.tokens[x:x + self.seq_length]).astype(np.int64) for x in idx]
+        attention_mask = [np.ones(len(inputs_ids[x]), dtype=np.int32) for x in range(len(idx))]
+        return {
+            "input_ids": inputs_ids,
+            "attention_mask": attention_mask
+        }
+
+
+def get_dataloader_small(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_size: int,
+                         train: bool = True) \
+        -> Tuple[DataLoader, DataLoader]:
+    """
+    Returns the dataloader for training and validation. The validation dataset is the initial part
+    of the training dataset.
+
+    :param tokenizer: the tokenizer to use
+    :param sequence_length: the maximum length of the sequence
+    :param batch_size: the batch size
+    :param train: whether the dataset is for training or not (it only shuffles the data)
+    :return: a tuple of (train_dataloader, val_dataloader)
+    """
+    file_path = "data/tinyshakespeare.txt"
+    if not os.path.exists(file_path):
+        print(f"Downloading tinyshakespeare dataset...")
+        data_url = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
+        with open(file_path, 'w') as f:
+            f.write(requests.get(data_url).text)
+    bin_file_path = f"data/tinyshakespeare_"
+    if not os.path.exists(bin_file_path + "train.bin"):
+        print("Processing dataset...")
+        with open(file_path, "r") as f:
+            data = f.read()
+        split_point = int(len(data) * 0.9)
+        train_data = data[:split_point]
+        val_data = data[split_point:]
+        for split, data in zip(["train", "val"], [train_data, val_data]):
+            tokens = tokenizer(data)['input_ids']
+            tokens_np = np.array(tokens, dtype=np.uint16)
+            tokens_np.tofile(bin_file_path + split + ".bin")
+    train_data = np.memmap(bin_file_path + "train.bin", dtype=np.uint16, mode='r')
+    val_data = np.memmap(bin_file_path + "val.bin", dtype=np.uint16, mode='r')
+    print(f"Train has {len(train_data)} tokens")
+    print(f"Validation has {len(val_data)} tokens")
+    train_dataloader = DataLoader(TextDataset(train_data, seq_length=sequence_length),
+                                  batch_size=batch_size,
+                                  shuffle=train,
+                                  pin_memory=True,
+                                  num_workers=os.cpu_count())
+    val_dataloader = DataLoader(TextDataset(val_data, seq_length=sequence_length),
+                                batch_size=batch_size,
+                                shuffle=False,
+                                drop_last=False,
+                                pin_memory=False,
+                                num_workers=os.cpu_count() // 2)
+
+    return train_dataloader, val_dataloader
 
 
 @app.command()
@@ -48,14 +112,6 @@ def download():
         datasets.load_dataset("bigcode/the-stack-dedup", data_dir=f"data/{lang}", split="train",
                               use_auth_token=TOKEN, num_proc=8)
     print("Done.")
-
-
-@app.command()
-def process():
-    """
-    Processes the dataset to make the load speed faster. (Not implemented yet)
-    """
-    raise NotImplementedError()  # TODO
 
 
 def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_size: int,
@@ -74,24 +130,23 @@ def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_s
     :param finetune: whether to finetune or not
     :param train: whether the dataset is for training or not (it only shuffles the data)
     :param val_samples: number of samples to use for validation
-    :param chars_per_token:
+    :param chars_per_token: characters per token on average
     :return: a tuple of (train_dataloader, val_dataloader)
     """
     assert train or not finetune, "Finetune is only supported for train=True"
-    ds = get_small_dataset()
-    # TODO
-    # all_ds = [datasets.load_dataset("bigcode/the-stack-dedup",
-    #                                 data_dir=f"data/{lang}",
-    #                                 split="train",
-    #                                 num_proc=8,
-    #                                 use_auth_token=TOKEN) for lang in
-    #           LANGUAGES]
-    # sizes = [len(ds) for ds in all_ds]
-    # sum_sizes = sum(sizes)
-    # probabilities = [size / sum_sizes for size in sizes]
-    # ds = interleave_datasets(all_ds, probabilities=probabilities,
-    #                          stopping_strategy="all_exhausted")
+    all_ds = [datasets.load_dataset("bigcode/the-stack-dedup",
+                                    data_dir=f"data/{lang}",
+                                    split="train",
+                                    num_proc=8,
+                                    use_auth_token=TOKEN) for lang in
+              LANGUAGES]
+    sizes = [len(ds) for ds in all_ds]
+    sum_sizes = sum(sizes)
+    probabilities = [size / sum_sizes for size in sizes]
+    ds = interleave_datasets(all_ds, probabilities=probabilities,
+                             stopping_strategy="all_exhausted")
     ds = ds.remove_columns([x for x in ds.column_names if x != "content"])
+
     def _basic_tokenizer(example):
         text_list = example["content"]
         for idx in range(len(text_list)):
@@ -111,12 +166,12 @@ def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_s
     else:
         ds.set_transform(_basic_tokenizer)
 
-
     data_collator = DataCollatorWithPadding(tokenizer, padding="longest",
                                             max_length=sequence_length, return_tensors='pt')
 
     if val_samples is not None:
-        val_ds = ds.select(range(val_samples))
+        generator = torch.Generator().manual_seed(42)
+        val_ds, ds = random_split(ds, [val_samples, len(ds) - val_samples], generator=generator)
         val_dataloader = DataLoader(val_ds,
                                     batch_size=batch_size,
                                     collate_fn=data_collator,
@@ -136,9 +191,9 @@ def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_s
     return train_dataloader, val_dataloader
 
 
-class CompleteCodeDataset(Dataset):
+class CompleteCodeDataset(object):
     """
-    A special dataset to modify the code to use it for code generation. It takes a random part of
+    A special object to modify the code to use it for code generation. It takes a random part of
     the code that it is supposed to be generated (between two blank spaces) and based on the context
     (the code before of what we are going to generate and the code after of what we are going to
     generate) it generates the code. So the sequence is:
@@ -163,8 +218,8 @@ class CompleteCodeDataset(Dataset):
         """
         self.tokenizer = tokenizer
         self.seq_length = seq_length
-        self.seq_length_chars = int(seq_length*chars_per_token)
-        self.max_code_generated_chars = int(max_code_generated*chars_per_token)
+        self.seq_length_chars = int(seq_length * chars_per_token)
+        self.max_code_generated_chars = int(max_code_generated * chars_per_token)
         self.input_column_name = input_column_name
         self.white_spaces_re = re.compile(r'[\s\n\t]')
         self.new_line_re = re.compile(r'[\n]')

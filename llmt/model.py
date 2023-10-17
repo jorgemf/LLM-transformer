@@ -1,5 +1,6 @@
-from typing import Optional, Tuple
 import math
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -91,8 +92,11 @@ class Transformer(nn.Module):
         tok_emb = self.vocab_embed(sequences)  # token embeddings of shape (b, t, n_embd)
         pos_emb = self.positional_embed(pos)  # position embeddings of shape (t, n_embd)
         x = self.dropout(tok_emb + pos_emb)
+        casual_mask = nn.Transformer.generate_square_subsequent_mask(sequences.size(1),
+                                                                     device=device,
+                                                                     dtype=torch.bool)
         for block in self.transformer_blocks:
-            x = block(x)
+            x = block(x, is_casual=True, attn_mask=casual_mask)
         x = self.layer_normalization(x)
 
         if targets is not None:
@@ -109,7 +113,6 @@ class Transformer(nn.Module):
                 mask_flat = mask.contiguous().view(-1).to(dtype=torch.bool)
                 logits_flat = logits_flat[mask_flat]
                 targets_flat = targets_flat[mask_flat]
-
             loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
@@ -132,6 +135,8 @@ class Transformer(nn.Module):
         :param top_k: the number of top tokens to consider for sampling
         :return: the generated tokens
         """
+        if top_k is not None:
+            assert top_k > 0
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             sequences_cropped = sequences
@@ -143,7 +148,6 @@ class Transformer(nn.Module):
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
             if top_k is not None:
-                assert top_k > 0
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float('Inf')
             # apply softmax to convert logits to (normalized) probabilities
@@ -178,9 +182,10 @@ class TransformerBlock(nn.Module):
         self.ln_2 = nn.LayerNorm(n_embeddings)
         self.mlp = MLP(n_embeddings, dropout, bias)
 
-    def forward(self, x):
+    def forward(self, x, is_casual, attn_mask):
         qkv = self.ln_1(x)
-        attention, _ = self.multiheadattention(qkv, qkv, qkv)
+        attention, _ = self.multiheadattention(qkv, qkv, qkv,
+                                               is_causal=is_casual, attn_mask=attn_mask)
         x = x + attention
         x = x + self.mlp(self.ln_2(x))
         return x

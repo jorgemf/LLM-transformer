@@ -1,5 +1,6 @@
-import datasets
 from pathlib import Path
+
+import datasets
 import torch
 
 # programming languages to use for training the model
@@ -11,6 +12,8 @@ RUNS_DIR = Path("./runs")
 DTYPE = torch.bfloat16
 # the authentication token to download the dataset (it is downloaded in the setup function)
 TOKEN = ""
+# the time interval to save the checkpoint
+CHECKPOINT_SAVE_TIME = 30 * 60  # 30 minutes
 
 
 def setup():

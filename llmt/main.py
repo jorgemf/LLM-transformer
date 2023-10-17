@@ -1,5 +1,7 @@
 import typer
+
 from .config import setup
+
 setup()
 from .dataset import app as dataset_app
 from .train import train

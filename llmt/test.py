@@ -1,13 +1,13 @@
-from typing import Optional
+from typing import Dict
 
-import torch
-from tqdm.auto import tqdm
-from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data import DataLoader
-from accelerate import Accelerator
 import numpy as np
-from .tokenizer import ReplitLMTokenizer
+import torch
+from accelerate import Accelerator
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
+
 from .model import Transformer
+from .tokenizer import ReplitLMTokenizer
 
 
 def test(val_samples: int = 10000):
@@ -21,29 +21,39 @@ def test_epoch(accelerator: Accelerator,
                val_dataloader: DataLoader,
                context_size: int,
                finetune: bool,
-               summary_writer: Optional[SummaryWriter],
                device: torch.device,
                epoch: int,
                global_step: int,
-               profiler=None,
-               tqdm_position: int = 0) -> float:
-    total_steps = len(val_dataloader.dataset)
-    progress_bar = tqdm(total=total_steps, leave=False, position=tqdm_position,
-                        disable=not accelerator.is_local_main_process)
+               profiler=None) -> Dict[str, float]:
+    """
+    Test the model for one epoch.
+    :param accelerator: the accelerator to use
+    :param model: the model to use
+    :param tokenizer: the tokenizer to use
+    :param val_dataloader: the validation dataloader to use
+    :param context_size: the context size to use
+    :param finetune: whether to finetune the model or not
+    :param device: the device to use
+    :param epoch: current epoch
+    :param global_step: current global step
+    :param profiler: the profiler to use
+    :return: a dictionary with the metrics, the loss included
+    """
     losses = []
     separator_token = tokenizer.bos_token_id if finetune else None
     with torch.no_grad():
         model.eval()
-        if accelerator.is_main_process and summary_writer is not None:
+        generated_text = ""
+        generated_main = ""
+        if accelerator.is_main_process:
             model_unwrap = accelerator.unwrap_model(model)
             generated_text = generate_text_sequence(model_unwrap, context_size, tokenizer, device)
-            print("generated text:", generated_text)
-            summary_writer.add_text("test/generated", generated_text, global_step=global_step)
-            generated_text = generate_text_sequence(model_unwrap, context_size, tokenizer, device,
+            generated_main = generate_text_sequence(model_unwrap, context_size, tokenizer, device,
                                                     initial_text="fun main(args: Array<String>) {")
-            print("generated main:", generated_text)
-            summary_writer.add_text("test/generated_main", generated_text, global_step=global_step)
 
+        total_steps = len(val_dataloader.dataset)
+        progress_bar = tqdm(total=total_steps, leave=False, position=0,
+                            disable=not accelerator.is_local_main_process)
         for batch, data in enumerate(val_dataloader):
             progress_bar.set_description(f"Step {batch + 1}/{total_steps}")
             tokens = data["input_ids"].to(dtype=torch.long)
@@ -63,19 +73,22 @@ def test_epoch(accelerator: Accelerator,
             if profiler is not None:
                 profiler.step()
     loss = np.mean(losses)
+    return {
+        'loss': loss,
+        'perplexity': np.exp(loss),
+        'generated_text:': generated_text,
+        'generated_main:': generated_main
+    }
 
-    if accelerator.is_main_process and summary_writer is not None:
-        summary_writer.add_scalar("test/loss", loss, global_step=global_step)
-    return loss
 
-
-def generate_text_sequence(model: Transformer, context_size:int, tokenizer: ReplitLMTokenizer,
+def generate_text_sequence(model: Transformer, context_size: int, tokenizer: ReplitLMTokenizer,
                            device: torch.device, initial_text: str = "") -> str:
     """
     Generate a text sequence from the model.
     :param model: the model to use
     :param context_size: the context size to use
     :param tokenizer: the tokenizer to use
+    :param device: the device to use
     :param initial_text: the initial text to use, if empy if generates a sequence from scratch
     :return: a text sequence
     """

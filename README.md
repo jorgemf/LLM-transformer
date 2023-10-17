@@ -12,7 +12,7 @@ poetry install
 ```
 
 Some of the dependencies are:
-- Pytorch 2.0
+- Pytorch 2.1
 - Python 3.10
 
 ### Docker
