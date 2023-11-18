@@ -10,9 +10,9 @@ from .model import Transformer
 from .tokenizer import ReplitLMTokenizer
 
 
+
 def test(val_samples: int = 10000):
-    # TODO: implement the test function
-    raise NotImplementedError
+    raise NotImplementedError  # TODO: implement the test function
 
 
 def test_epoch(accelerator: Accelerator,

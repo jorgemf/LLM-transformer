@@ -72,7 +72,8 @@ def train(batch_size: int = 16,
     :param initial_val: whether to perform the initial validation or not
     :return:
     """
-    assert dataset_type == DatasetType.SMALL and not finetune, \
+    global checkpoint_time
+    assert dataset_type == DatasetType.FULL or not finetune, \
         "finetune only is available with full dataset"
     dtype = DTYPE
     if experiment_dir is None:
@@ -157,6 +158,8 @@ def train(batch_size: int = 16,
         if accelerator.is_main_process:
             log_metrics(metrics, global_step=0, writer=writer_val)
 
+    checkpoint_time = time.time() + CHECKPOINT_SAVE_TIME
+
     # training
     for e in range(epochs):
         progress_bar.set_description(f"Epoch {e + 1}/{epochs}")
@@ -164,7 +167,7 @@ def train(batch_size: int = 16,
         epoch(accelerator, train_dataloader, tokenizer, e, model, optimizer, lr_scheduler,
               finetune, gradient_clip, writer_train, dtype=dtype,
               batch_size=accelerator.num_processes * batch_size,
-              save_path=experiment_dir.join("checkpoint"))
+              save_path=experiment_dir.joinpath("checkpoint"))
 
         progress_bar.update(1)
         if accelerator.is_main_process:
@@ -284,6 +287,7 @@ def epoch(accelerator: Accelerator,
     :param profiler: the profiler to use
     :return: None
     """
+    global checkpoint_time
     model.train()
 
     separator_token = tokenizer.bos_token_id if finetune else None
@@ -331,6 +335,5 @@ def epoch(accelerator: Accelerator,
             # save checkpoint just in case
             if time.time() > checkpoint_time:
                 accelerator.save_state(save_path)
-                accelerator.save_state()
                 checkpoint_time = time.time() + CHECKPOINT_SAVE_TIME
 
