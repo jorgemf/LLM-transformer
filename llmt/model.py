@@ -12,7 +12,9 @@ class Transformer(nn.Module):
     """
 
     def __init__(self, vocab_size: int, layers: int, n_heads: int, embeddings_size: int,
-                 dropout: float, bias: bool, context_size: int):
+                 dropout: float, bias: bool, context_size: int,
+                 focus_temp: float, focus_percent: float, focus_min_seq_len: int,
+                 focus_num_fixed_positions: int):
         """
         Initializes the transformer model.
         :param vocab_size: the size of the vocabulary
@@ -22,6 +24,10 @@ class Transformer(nn.Module):
         :param dropout: the dropout rate
         :param bias: whether to use bias or not
         :param context_size: the context size or maximum length of the sequences
+        :param focus_temp: the temperature to use for the softmax for focus attention
+        :param focus_percent: the percentage of tokens to focus on the layers
+        :param focus_min_seq_len: the minimum sequence length to apply focus attention
+        :param focus_num_fixed_positions: the number of fixed positions to add in focus attention
         """
         super().__init__()
         self.layers = layers
@@ -30,12 +36,14 @@ class Transformer(nn.Module):
         self.embeddings_size = embeddings_size
         self.dropout = dropout
         self.context_size = context_size
+        self.focus_num_fixed_positions = focus_num_fixed_positions
 
         self.vocab_embed = nn.Embedding(vocab_size, embeddings_size)
         self.positional_embed = nn.Embedding(context_size, embeddings_size)
         self.dropout = nn.Dropout(dropout)
         self.transformer_blocks = nn.ModuleList(
-            [TransformerBlock(n_heads, embeddings_size, dropout, bias) for _ in range(layers)])
+            [TransformerBlock(n_heads, embeddings_size, dropout, bias,
+                              focus_temp, focus_percent, focus_min_seq_len) for _ in range(layers)])
         self.layer_normalization = nn.LayerNorm(embeddings_size)
 
         self.decoder = nn.Linear(embeddings_size, vocab_size)
@@ -88,15 +96,32 @@ class Transformer(nn.Module):
 
         pos = torch.arange(0, t, dtype=torch.int32, device=device)  # shape (t)
 
+        if mask is not None and sep_token is not None:
+            # do not use the initial text for loss calculation
+            mask_aux = torch.cumsum(sequences == sep_token, dim=-1)
+            mask = mask * mask_aux
+
         # forward the GPT model itself
         tok_emb = self.vocab_embed(sequences)  # token embeddings of shape (b, t, n_embd)
         pos_emb = self.positional_embed(pos)  # position embeddings of shape (t, n_embd)
         x = self.dropout(tok_emb + pos_emb)
-        casual_mask = nn.Transformer.generate_square_subsequent_mask(sequences.size(1),
-                                                                     device=device,
-                                                                     dtype=torch.bool)
+        if self.training:
+            fixed_positions = torch.randint(low=0, high=t,
+                                            size=(b, self.focus_num_fixed_positions),
+                                            device=x.device)
+            fixed_pos_masks = torch.zeros((b, t), dtype=torch.bool, device=x.device)
+            batch_indices = torch.arange(b, device=x.device)
+            batch_indices = batch_indices.view(-1, 1).expand_as(fixed_positions)
+            fixed_pos_masks[batch_indices, fixed_positions] = True
+        else:
+            fixed_pos_masks = None
         for block in self.transformer_blocks:
-            x = block(x, is_casual=True, attn_mask=casual_mask)
+            casual_mask = nn.Transformer.generate_square_subsequent_mask(x.size(1),
+                                                                         device=device,
+                                                                         dtype=torch.bool)
+            x, targets, mask, fixed_pos_masks = block(x, is_casual=True, attn_mask=casual_mask,
+                                                      targets=targets, mask=mask,
+                                                      fixed_positions=fixed_pos_masks)
         x = self.layer_normalization(x)
 
         if targets is not None:
@@ -106,10 +131,6 @@ class Transformer(nn.Module):
             targets_flat = targets.contiguous().view(-1)
 
             if mask is not None:
-                if sep_token is not None:
-                    # do not use the initial text for loss calculation
-                    mask_aux = torch.cumsum(sequences == sep_token, dim=-1)
-                    mask = mask * mask_aux
                 mask_flat = mask.contiguous().view(-1).to(dtype=torch.bool)
                 logits_flat = logits_flat[mask_flat]
                 targets_flat = targets_flat[mask_flat]
@@ -165,16 +186,26 @@ class TransformerBlock(nn.Module):
     A transformer block as used in GPT models.
     """
 
-    def __init__(self, n_heads: int, n_embeddings: int, dropout: float, bias: bool):
+    def __init__(self, n_heads: int, n_embeddings: int, dropout: float, bias: bool,
+                 focus_temperature: float, focus_percent: float, focus_min_seq_len: int):
         """
         :param n_heads: the number of heads to use in the multihead attention
         :param n_embeddings: the number of embeddings
         :param dropout: the dropout probability
         :param bias: whether to use bias in the multihead attention
+        :param focus_temperature: the temperature to use for the softmax for focus attention
+        :param focus_percent: the percentage of tokens to focus on the layer
+        :param focus_min_seq_len: the minimum sequence length to apply focus attention
         """
         super().__init__()
         assert n_embeddings % n_heads == 0, \
             f"n_embeddings ({n_embeddings}) must be divisible by n_heads ({n_heads})"
+        assert 0 <= focus_percent <= 1, "focus_percent must be between 0 and 1"
+        assert 0 <= focus_temperature <= 1, "focus_temperature must be between 0 and 1"
+        assert focus_min_seq_len > 0, "focus_min_seq_len must be greater than 0"
+        self.focus_temperature = focus_temperature
+        self.focus_percent = focus_percent
+        self.focus_min_seq_len = focus_min_seq_len
         self.ln_1 = nn.LayerNorm(n_embeddings)
         self.multiheadattention = nn.MultiheadAttention(embed_dim=n_embeddings, num_heads=n_heads,
                                                         dropout=dropout, bias=bias,
@@ -182,13 +213,42 @@ class TransformerBlock(nn.Module):
         self.ln_2 = nn.LayerNorm(n_embeddings)
         self.mlp = MLP(n_embeddings, dropout, bias)
 
-    def forward(self, x, is_casual, attn_mask):
+    def forward(self, x, is_casual, attn_mask, targets=None, mask=None, fixed_positions=None):
         qkv = self.ln_1(x)
-        attention, _ = self.multiheadattention(qkv, qkv, qkv,
-                                               is_causal=is_casual, attn_mask=attn_mask)
+        attention, weights = self.multiheadattention(qkv, qkv, qkv,
+                                                     is_causal=is_casual, attn_mask=attn_mask,
+                                                     average_attn_weights=True)
+        seq_len = x.shape[1]
+        if seq_len > self.focus_min_seq_len:
+            next_seq_len = math.floor(seq_len * self.focus_percent)
+            sum_values = torch.sum(weights, dim=1)
+            n = torch.arange(sum_values.shape[1], 0, -1, device=sum_values.device)
+            token_contribution = sum_values / n
+
+            if self.training:
+                # set probability of 1 to fixed positions and select the indices
+                token_contribution = F.softmax(token_contribution / self.focus_temperature, dim=-1)
+                token_contribution[fixed_positions] = 1.0
+                idx_next = torch.multinomial(token_contribution, num_samples=next_seq_len)
+            else:
+                # select indices of the top k tokens
+                _, idx_next = torch.topk(token_contribution, k=next_seq_len, dim=1, sorted=False)
+            idx_next, _ = idx_next.sort(dim=1)
+            # Adjust indices for gather
+            indices = idx_next.unsqueeze(-1).expand(-1, -1, attention.shape[-1])
+            # Focus attention on the selected tokens
+            attention = torch.gather(attention, 1, indices)
+            x = torch.gather(x, 1, indices)
+            if mask is not None:
+                mask = torch.gather(mask, 1, idx_next)
+            if targets is not None:
+                targets = torch.gather(targets, 1, idx_next)
+            if fixed_positions is not None:
+                fixed_positions = torch.gather(fixed_positions, 1, idx_next)
+
         x = x + attention
         x = x + self.mlp(self.ln_2(x))
-        return x
+        return x, targets, mask, fixed_positions
 
 
 class MLP(nn.Module):

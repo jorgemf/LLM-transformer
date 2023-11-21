@@ -24,8 +24,8 @@ from .tokenizer import ReplitLMTokenizer
 checkpoint_time = time.time() + CHECKPOINT_SAVE_TIME
 
 
-def train(batch_size: int = 16,
-          gradient_accumulation_steps: int = 16,
+def train(batch_size: int = 28,
+          gradient_accumulation_steps: int = 10,
           epochs: int = 5,
           learning_rate: float = 1e-3,
           learning_rate_decay: float = 0.5,
@@ -38,6 +38,10 @@ def train(batch_size: int = 16,
           dropout: float = 0.0,
           gradient_clip: float = 1.0,
           weight_decay: float = 1e-1,
+          focus_temp: float = 0.8,
+          focus_percent: float = 0.85,
+          focus_min_seq_len: int = 10,
+          focus_num_fixed_positions: int = 30,
           finetune: bool = False,
           profiler: bool = False,
           experiment_dir: str = None,
@@ -62,6 +66,10 @@ def train(batch_size: int = 16,
     :param dropout: whether to use dropout or not (value between 0 and 1 for the dropout rate)
     :param gradient_clip: gradient clipping, use 0.0 to disable it
     :param weight_decay: weight decay for the optimizer (regularization)
+    :param focus_temp: temperature for the focus mechanism
+    :param focus_percent: percentage of the sequence to focus on
+    :param focus_min_seq_len: minimum sequence length to apply the focus attention
+    :param focus_num_fixed_positions: number of fixed positions to use for the focus attention
     :param finetune: whether to finetune the model or not (data is adapted for code prediction)
     :param profiler: whether to profile the code or not
     :param experiment_dir: directory to save the experiment
@@ -95,6 +103,10 @@ def train(batch_size: int = 16,
                         dropout=dropout,
                         bias=bias,
                         context_size=context_size,
+                        focus_temp=focus_temp,
+                        focus_percent=focus_percent,
+                        focus_min_seq_len=focus_min_seq_len,
+                        focus_num_fixed_positions=focus_num_fixed_positions,
                         ).to(dtype)
 
     betas = (0.9, 0.95)
@@ -336,4 +348,3 @@ def epoch(accelerator: Accelerator,
             if time.time() > checkpoint_time:
                 accelerator.save_state(save_path)
                 checkpoint_time = time.time() + CHECKPOINT_SAVE_TIME
-

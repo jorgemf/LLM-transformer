@@ -138,8 +138,7 @@ def get_dataloader(tokenizer: PreTrainedTokenizer, sequence_length: int, batch_s
                                     data_dir=f"data/{lang}",
                                     split="train",
                                     num_proc=8,
-                                    use_auth_token=TOKEN) for lang in
-              LANGUAGES]
+                                    token=TOKEN) for lang in LANGUAGES]
     sizes = [len(ds) for ds in all_ds]
     sum_sizes = sum(sizes)
     probabilities = [size / sum_sizes for size in sizes]

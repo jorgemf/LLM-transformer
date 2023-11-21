@@ -1,8 +1,9 @@
 from typing import Optional
 
+import torch
 import typer
 
-from .config import setup
+from .config import setup, get_device
 
 setup()
 from .dataset import app as dataset_app
@@ -29,15 +30,27 @@ def generate(checkpoint: str, hparams: str, text: Optional[str] = None, topk: Op
     :param max_new_tokens: the maximum number of tokens to generate
     """
     hparams = load_hparams(hparams)
-    model = create_model(hparams, checkpoint)
+    model, tokenizer = create_model(hparams, checkpoint)
+    model.eval()
     if text is None:
         text = ""
     if temperature is None:
         temperature = 1.0
     if max_new_tokens is None:
         max_new_tokens = model.context_size - len(text)
-    generated_text = model.generate(text, topk=topk, temperature=temperature,
-                                    max_new_tokens=max_new_tokens)
+
+    device = get_device()
+    if len(text) == 0:
+        tokens = torch.zeros((1, 1), dtype=torch.long, device=device)
+    else:
+        # tokens = tokenizer([text])['input_ids']
+        # tokens = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
+        # TODO remove
+        tokens = tokenizer(['print("hello','print("hello world'],padding="longest")['input_ids']
+        tokens = torch.tensor(tokens, dtype=torch.long, device=device)
+    generated_tokens = model.generate(tokens, top_k=topk, temperature=temperature,
+                                      max_new_tokens=max_new_tokens)
+    generated_text = tokenizer.decode(generated_tokens[0].cpu().numpy())
     print(generated_text)
 
 
