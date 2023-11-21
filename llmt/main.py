@@ -43,11 +43,8 @@ def generate(checkpoint: str, hparams: str, text: Optional[str] = None, topk: Op
     if len(text) == 0:
         tokens = torch.zeros((1, 1), dtype=torch.long, device=device)
     else:
-        # tokens = tokenizer([text])['input_ids']
-        # tokens = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
-        # TODO remove
-        tokens = tokenizer(['print("hello','print("hello world'],padding="longest")['input_ids']
-        tokens = torch.tensor(tokens, dtype=torch.long, device=device)
+        tokens = tokenizer([text])['input_ids']
+        tokens = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
     generated_tokens = model.generate(tokens, top_k=topk, temperature=temperature,
                                       max_new_tokens=max_new_tokens)
     generated_text = tokenizer.decode(generated_tokens[0].cpu().numpy())
